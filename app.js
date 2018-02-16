@@ -356,6 +356,12 @@ app.post('/api/message', function(req, res) {
                 return res.status(err.code || 500).json(err);
               } else {
                 console.log('conversation.message :: ', JSON.stringify(data));
+				//////////////////////////////
+				// HAYYYYYYYYYYYYYY
+				//////////////////////////////
+				if(data.output.text == "Please wait while validating your data."){
+					createTicket(data);
+				}
                 // lookup actions
                 checkForLookupRequests(data, function(err, data) {
                   if (err) {
@@ -702,4 +708,57 @@ function handleSetupError(reason) {
   process.exit(1);
 }
 
+function createTicket(data){
+console.log("Creating a ticket");
+	var x_user_mail = data.context.useremail;
+	var x_manager_mail = data.context.manageremail;
+	var x_user_asset_id = data.context.assetid;
+	var req_body = prepare_req_body(x_user_mail,x_manager_mail,x_user_asset_id);
+	
+	send_remedy_post(req_body);
+	
+	
+	}
+function prepare_req_body(x_user_mail,x_manager_mail,x_user_asset_id){
+
+  return "<?xml version='1.0' encoding='utf-8'?>" +
+           "<soapenv:Envelope xmlns:soapenv='http://schemas.xmlsoap.org/soap/envelope/' xmlns:urn='urn:HPD_IncidentInterface_Create_WS'>"+
+           "<soapenv:Header><urn:AuthenticationInfo><urn:userName>FU-ICE-VA</urn:userName><urn:password>;R*bqn?dG}v~Y5.5</urn:password></urn:AuthenticationInfo></soapenv:Header><soapenv:Body><urn:HelpDesk_Submit_Service><urn:Assigned_Group>Virtual Agent</urn:Assigned_Group><urn:Assigned_Support_Company>Vodafone IT Services</urn:Assigned_Support_Company><urn:Assigned_Support_Organization>ITSM System</urn:Assigned_Support_Organization><urn:Assignee>AMELIA Virtual Agent</urn:Assignee><urn:Categorization_Tier_1>FRONT OFFICE SERVICES</urn:Categorization_Tier_1><urn:Categorization_Tier_2>Push Mail</urn:Categorization_Tier_2><urn:Categorization_Tier_3>Enable device (Activation Push mail)</urn:Categorization_Tier_3><urn:First_Name>Mohamed</urn:First_Name><urn:Impact>3-Moderate/Limited</urn:Impact><urn:Last_Name>Mahmoud Nofal</urn:Last_Name><urn:Product_Name>VF-MOBILE DEVICE MANAGEMENT-CLIENT</urn:Product_Name><urn:Reported_Source>Web to ticket</urn:Reported_Source><urn:Service_Type>User Service Request</urn:Service_Type><urn:Status>In Progress</urn:Status><urn:Action>CREATE</urn:Action><urn:Create_Request>0</urn:Create_Request><urn:Summary>Airwatch Agent enrollment</urn:Summary><urn:Notes>User has issue with reset password ..... User email :"+x_user_mail+" ... asset id : "+x_user_asset_id+" .... Line manager : "+x_manager_mail+"</urn:Notes><urn:Urgency>3-Medium</urn:Urgency><urn:ServiceCI>VF-MOBILE DEVICE MANAGEMENT-CLIENT</urn:ServiceCI><urn:Login_ID>mnofal</urn:Login_ID></urn:HelpDesk_Submit_Service></soapenv:Body></soapenv:Envelope>";
+	
+}
+function send_remedy_post(req_body){
+	var http = require('https');
+	var fs = require('fs');
+
+
+var postRequest = {
+    host: "itsm-stage.vodafone.com",
+    port: 443,
+	path: "/arsys-ext/services/ARService?server=itsm-stage&webService=HPD_IncidentInterface_Create_WS",
+    method: "POST",
+    headers: {
+        'Content-Type': 'text/xml;charset=UTF-8',
+        'Content-Length': Buffer.byteLength(req_body),
+		'SOAPAction':'urn:HPD_IncidentInterface_Create_WS/HelpDesk_Submit_Service'
+    }
+};
+
+var buffer = "";
+
+var req = http.request( postRequest, function( res )    {
+
+   console.log( res.statusCode );
+   var buffer = "";
+   res.on( "data", function( data ) { buffer = buffer + data; } );
+   res.on( "end", function( data ) { console.log( buffer ); } );
+
+});
+
+req.on('error', function(e) {
+    console.log('problem with request: ' + e.message);
+});
+
+req.write( req_body );
+req.end();
+}
 module.exports = app;

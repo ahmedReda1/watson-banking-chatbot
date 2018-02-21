@@ -359,7 +359,7 @@ app.post('/api/message', function(req, res) {
 				//////////////////////////////
 				// HAYYYYYYYYYYYYYY
 				//////////////////////////////
-				if(data.output.text == "Please wait while validating your data."){
+				if(data.output.text == "Are you login through your windows machine?"){
 					createTicket(data);
 				}
                 // lookup actions

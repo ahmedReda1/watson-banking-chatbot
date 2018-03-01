@@ -13,18 +13,17 @@
  * License for the specific language governing permissions and limitations under
  * the License.
  */
-
 'use strict';
 
 require('dotenv').config({
-  silent: true
+    silent: true
 });
 
 const express = require('express'); // app server
 const bodyParser = require('body-parser'); // parser for post requests
 const watson = require('watson-developer-cloud'); // watson sdk
 const fs = require('fs'); // file system for loading JSON
-
+const axios = require('axios');
 // cfenv provides access to your Cloud Foundry environment
 // for more info, see: https://www.npmjs.com/package/cfenv
 // const cfenv = require('cfenv');
@@ -42,16 +41,17 @@ const WatsonConversationSetup = require('./lib/watson-conversation-setup');
 const DEFAULT_NAME = 'watson-banking-chatbot';
 const DISCOVERY_ACTION = 'rnr'; // Replaced RnR w/ Discovery but Conversation action is still 'rnr'.
 const DISCOVERY_DOCS = [
-  './data/discovery/docs/BankFaqRnR-DB-Failure-General.docx',
-  './data/discovery/docs/BankFaqRnR-DB-Terms-General.docx',
-  './data/discovery/docs/BankFaqRnR-e2eAO-Terms.docx',
-  './data/discovery/docs/BankFaqRnR-e2ePL-Terms.docx',
-  './data/discovery/docs/BankRnR-OMP-General.docx'
+    './data/discovery/docs/BankFaqRnR-DB-Failure-General.docx',
+    './data/discovery/docs/BankFaqRnR-DB-Terms-General.docx',
+    './data/discovery/docs/BankFaqRnR-e2eAO-Terms.docx',
+    './data/discovery/docs/BankFaqRnR-e2ePL-Terms.docx',
+    './data/discovery/docs/BankRnR-OMP-General.docx'
 ];
 
 const LOOKUP_BALANCE = 'balance';
 const LOOKUP_TRANSACTIONS = 'transactions';
 const LOOKUP_5TRANSACTIONS = '5transactions';
+const CREATE_TICKET = 'create_ticket';
 
 const app = express();
 
@@ -71,628 +71,637 @@ const toneAnalyzerCredentials = vcapServices.getCredentials('tone_analyzer');
 const discoveryCredentials = vcapServices.getCredentials('discovery');
 
 const discovery = watson.discovery({
-  password: discoveryCredentials.password,
-  username: discoveryCredentials.username,
-  version_date: '2017-10-16',
-  version: 'v1'
+    password: discoveryCredentials.password,
+    username: discoveryCredentials.username,
+    version_date: '2017-10-16',
+    version: 'v1'
 });
 let discoveryParams; // discoveryParams will be set after Discovery is validated and setup.
 const discoverySetup = new WatsonDiscoverySetup(discovery);
-const discoverySetupParams = { default_name: DEFAULT_NAME, documents: DISCOVERY_DOCS };
+const discoverySetupParams = {
+    default_name: DEFAULT_NAME,
+    documents: DISCOVERY_DOCS
+};
 discoverySetup.setupDiscovery(discoverySetupParams, (err, data) => {
-  if (err) {
-    handleSetupError(err);
-  } else {
-    console.log('Discovery is ready!');
-    discoveryParams = data;
-  }
+    if (err) {
+        handleSetupError(err);
+    } else {
+        console.log('Discovery is ready!');
+        discoveryParams = data;
+    }
 });
 
 // Create the service wrapper
 const conversation = watson.conversation({
-  url: conversationCredentials.url,
-  username: conversationCredentials.username,
-  password: conversationCredentials.password,
-  version_date: '2016-07-11',
-  version: 'v1'
+    url: conversationCredentials.url,
+    username: conversationCredentials.username,
+    password: conversationCredentials.password,
+    version_date: '2016-07-11',
+    version: 'v1'
 });
 
 let workspaceID; // workspaceID will be set when the workspace is created or validated.
 const conversationSetup = new WatsonConversationSetup(conversation);
 const workspaceJson = JSON.parse(fs.readFileSync('data/conversation/workspaces/banking.json'));
-const conversationSetupParams = { default_name: DEFAULT_NAME, workspace_json: workspaceJson };
+const conversationSetupParams = {
+    default_name: DEFAULT_NAME,
+    workspace_json: workspaceJson
+};
 conversationSetup.setupConversationWorkspace(conversationSetupParams, (err, data) => {
-  if (err) {
-    handleSetupError(err);
-  } else {
-    console.log('Conversation is ready!');
-    workspaceID = data;
-  }
+    if (err) {
+        handleSetupError(err);
+    } else {
+        console.log('Conversation is ready!');
+        workspaceID = data;
+    }
 });
 
 const toneAnalyzer = watson.tone_analyzer({
-  username: toneAnalyzerCredentials.username,
-  password: toneAnalyzerCredentials.password,
-  url: toneAnalyzerCredentials.url,
-  version: 'v3',
-  version_date: '2016-05-19'
+    username: toneAnalyzerCredentials.username,
+    password: toneAnalyzerCredentials.password,
+    url: toneAnalyzerCredentials.url,
+    version: 'v3',
+    version_date: '2016-05-19'
 });
 
 /* ******** NLU ************ */
 const NaturalLanguageUnderstandingV1 = require('watson-developer-cloud/natural-language-understanding/v1.js');
 const nlu = new NaturalLanguageUnderstandingV1({
-  username: nluCredentials.username,
-  password: nluCredentials.password,
-  version_date: '2017-02-27'
+    username: nluCredentials.username,
+    password: nluCredentials.password,
+    version_date: '2017-02-27'
 });
 
 // Endpoint to be called from the client side
 app.post('/api/message', function(req, res) {
-  if (setupError) {
-    return res.json({ output: { text: 'The app failed to initialize properly. Setup and restart needed.' + setupError } });
-  }
-
-  if (!workspaceID) {
-    return res.json({
-      output: {
-        text: 'Conversation initialization in progress. Please try again.'
-      }
-    });
-  }
-
-  bankingServices.getPerson(7829706, function(err, person) {
-    if (err) {
-      console.log('Error occurred while getting person data ::', err);
-      return res.status(err.code || 500).json(err);
+    if (setupError) {
+        return res.json({
+            output: {
+                text: 'The app failed to initialize properly. Setup and restart needed.' + setupError
+            }
+        });
     }
 
-    const payload = {
-      workspace_id: workspaceID,
-      context: {
-        person: person
-      },
-      input: {}
-    };
-
-    // common regex patterns
-    const regpan = /^([a-zA-Z]){5}([0-9]){4}([a-zA-Z]){1}?$/;
-    // const regadhaar = /^\d{12}$/;
-    // const regmobile = /^(?:(?:\+|0{0,2})91(\s*[\-]\s*)?|[0]?)?[789]\d{9}$/;
-    if (req.body) {
-      if (req.body.input) {
-        let inputstring = req.body.input.text;
-        console.log('input string ', inputstring);
-        const words = inputstring.split(' ');
-        console.log('words ', words);
-        inputstring = '';
-        for (let i = 0; i < words.length; i++) {
-          if (regpan.test(words[i]) === true) {
-            // const value = words[i];
-            words[i] = '1111111111';
-          }
-          inputstring += words[i] + ' ';
-        }
-        // words.join(' ');
-        inputstring = inputstring.trim();
-        console.log('After inputstring ', inputstring);
-        // payload.input = req.body.input;
-        payload.input.text = inputstring;
-      }
-      if (req.body.context) {
-        // The client must maintain context/state
-        payload.context = req.body.context;
-      }
+    if (!workspaceID) {
+        return res.json({
+            output: {
+                text: 'Conversation initialization in progress. Please try again.'
+            }
+        });
     }
 
-    /* if (req.body) {
-        if (req.body.input) {
-            payload.input = req.body.input;
-                        }
-        if (req.body.context) {
-            // The client must maintain context/state
-            payload.context = req.body.context;
-        }
-
-    } */
-
-    callconversation(payload);
-  });
-
-  /**
-   * Send the input to the conversation service.
-   * @param payload
-   */
-  function callconversation(payload) {
-    const queryInput = JSON.stringify(payload.input);
-    // const context_input = JSON.stringify(payload.context);
-
-    toneAnalyzer.tone(
-      {
-        text: queryInput,
-        tones: 'emotion'
-      },
-      function(err, tone) {
-        let toneAngerScore = '';
+    bankingServices.getPerson(7829706, function(err, person) {
         if (err) {
-          console.log('Error occurred while invoking Tone analyzer. ::', err);
-          // return res.status(err.code || 500).json(err);
-        } else {
-          const emotionTones = tone.document_tone.tone_categories[0].tones;
-
-          const len = emotionTones.length;
-          for (let i = 0; i < len; i++) {
-            if (emotionTones[i].tone_id === 'anger') {
-              console.log('Input = ', queryInput);
-              console.log('emotion_anger score = ', 'Emotion_anger', emotionTones[i].score);
-              toneAngerScore = emotionTones[i].score;
-              break;
-            }
-          }
+            console.log('Error occurred while getting person data ::', err);
+            return res.status(err.code || 500).json(err);
         }
 
-        payload.context['tone_anger_score'] = toneAngerScore;
+        const payload = {
+            workspace_id: workspaceID,
+            context: {
+                person: person
+            },
+            input: {}
+        };
 
-        if (payload.input.text != '') {
-          // console.log('input text payload = ', payload.input.text);
-          const parameters = {
-            text: payload.input.text,
-            features: {
-              entities: {
-                emotion: true,
-                sentiment: true,
-                limit: 2
-              },
-              keywords: {
-                emotion: true,
-                sentiment: true,
-                limit: 2
-              }
+        // common regex patterns
+        const regpan = /^([a-zA-Z]){5}([0-9]){4}([a-zA-Z]){1}?$/;
+        // const regadhaar = /^\d{12}$/;
+        // const regmobile = /^(?:(?:\+|0{0,2})91(\s*[\-]\s*)?|[0]?)?[789]\d{9}$/;
+        if (req.body) {
+            if (req.body.input) {
+                let inputstring = req.body.input.text;
+                console.log('input string ', inputstring);
+                const words = inputstring.split(' ');
+                console.log('words ', words);
+                inputstring = '';
+                for (let i = 0; i < words.length; i++) {
+                    if (regpan.test(words[i]) === true) {
+                        // const value = words[i];
+                        words[i] = '1111111111';
+                    }
+                    inputstring += words[i] + ' ';
+                }
+                // words.join(' ');
+                inputstring = inputstring.trim();
+                console.log('After inputstring ', inputstring);
+                // payload.input = req.body.input;
+                payload.input.text = inputstring;
             }
-          };
-
-          nlu.analyze(parameters, function(err, response) {
-            if (err) {
-              console.log('error:', err);
-            } else {
-              const nluOutput = response;
-
-              payload.context['nlu_output'] = nluOutput;
-              // console.log('NLU = ', nlu_output);
-              // identify location
-              const entities = nluOutput.entities;
-              let location = entities.map(function(entry) {
-                if (entry.type == 'Location') {
-                  return entry.text;
-                }
-              });
-              location = location.filter(function(entry) {
-                if (entry != null) {
-                  return entry;
-                }
-              });
-              if (location.length > 0) {
-                payload.context['Location'] = location[0];
-                console.log('Location = ', payload.context['Location']);
-              } else {
-                payload.context['Location'] = '';
-              }
-
-              /*
-              // identify Company
-
-              let company = entities.map(function(entry) {
-                if (entry.type == 'Company') {
-                  return entry.text;
-                }
-              });
-              company = company.filter(function(entry) {
-                if (entry != null) {
-                  return entry;
-                }
-              });
-              if (company.length > 0) {
-                payload.context.userCompany = company[0];
-              } else {
-                delete payload.context.userCompany;
-              }
-
-              // identify Person
-
-              let person = entities.map(function(entry) {
-                if (entry.type == 'Person') {
-                  return entry.text;
-                }
-              });
-              person = person.filter(function(entry) {
-                if (entry != null) {
-                  return entry;
-                }
-              });
-              if (person.length > 0) {
-                payload.context.Person = person[0];
-              } else {
-                delete payload.context.Person;
-              }
-
-              // identify Vehicle
-
-              let vehicle = entities.map(function(entry) {
-                if (entry.type == 'Vehicle') {
-                  return entry.text;
-                }
-              });
-              vehicle = vehicle.filter(function(entry) {
-                if (entry != null) {
-                  return entry;
-                }
-              });
-              if (vehicle.length > 0) {
-                payload.context.userVehicle = vehicle[0];
-              } else {
-                delete payload.context.userVehicle;
-              }
-              // identify Email
-
-              let email = entities.map(function(entry) {
-                if(entry.type == 'EmailAddress') {
-                  return(entry.text);
-                }
-              });
-              email = email.filter(function(entry) {
-                if(entry != null) {
-                  return(entry);
-                }
-              });
-              if(email.length > 0) {
-                payload.context.userEmail = email[0];
-              } else {
-                delete payload.context.userEmail;
-              }
-              */
+            if (req.body.context) {
+                // The client must maintain context/state
+                payload.context = req.body.context;
             }
-
-            conversation.message(payload, function(err, data) {
-              if (err) {
-                return res.status(err.code || 500).json(err);
-              } else {
-                console.log('conversation.message :: ', JSON.stringify(data));
-				//////////////////////////////
-				// HAYYYYYYYYYYYYYY
-				//////////////////////////////
-				if(data.output.text == "Please wait while validating your data."){
-					createTicket(data);
-				}
-                // lookup actions
-                checkForLookupRequests(data, function(err, data) {
-                  if (err) {
-                    return res.status(err.code || 500).json(err);
-                  } else {
-                    return res.json(data);
-                  }
-                });
-              }
-            });
-          });
-        } else {
-          conversation.message(payload, function(err, data) {
-            if (err) {
-              return res.status(err.code || 500).json(err);
-            } else {
-              console.log('conversation.message :: ', JSON.stringify(data));
-              return res.json(data);
-            }
-          });
         }
-      }
-    );
-  }
+
+        /* if (req.body) {
+            if (req.body.input) {
+                payload.input = req.body.input;
+                            }
+            if (req.body.context) {
+                // The client must maintain context/state
+                payload.context = req.body.context;
+            }
+
+        } */
+
+        callconversation(payload);
+    });
+
+    /**
+     * Send the input to the conversation service.
+     * @param payload
+     */
+    function callconversation(payload) {
+        const queryInput = JSON.stringify(payload.input);
+        // const context_input = JSON.stringify(payload.context);
+
+        toneAnalyzer.tone({
+                text: queryInput,
+                tones: 'emotion'
+            },
+            function(err, tone) {
+                let toneAngerScore = '';
+                if (err) {
+                    console.log('Error occurred while invoking Tone analyzer. ::', err);
+                    // return res.status(err.code || 500).json(err);
+                } else {
+                    const emotionTones = tone.document_tone.tone_categories[0].tones;
+
+                    const len = emotionTones.length;
+                    for (let i = 0; i < len; i++) {
+                        if (emotionTones[i].tone_id === 'anger') {
+                            console.log('Input = ', queryInput);
+                            console.log('emotion_anger score = ', 'Emotion_anger', emotionTones[i].score);
+                            toneAngerScore = emotionTones[i].score;
+                            break;
+                        }
+                    }
+                }
+
+                payload.context['tone_anger_score'] = toneAngerScore;
+
+                if (payload.input.text != '') {
+                    // console.log('input text payload = ', payload.input.text);
+                    const parameters = {
+                        text: payload.input.text,
+                        features: {
+                            entities: {
+                                emotion: true,
+                                sentiment: true,
+                                limit: 2
+                            },
+                            keywords: {
+                                emotion: true,
+                                sentiment: true,
+                                limit: 2
+                            }
+                        }
+                    };
+
+                    nlu.analyze(parameters, function(err, response) {
+                        if (err) {
+                            console.log('error:', err);
+                        } else {
+                            const nluOutput = response;
+
+                            payload.context['nlu_output'] = nluOutput;
+                            // console.log('NLU = ', nlu_output);
+                            // identify location
+                            const entities = nluOutput.entities;
+                            let location = entities.map(function(entry) {
+                                if (entry.type == 'Location') {
+                                    return entry.text;
+                                }
+                            });
+                            location = location.filter(function(entry) {
+                                if (entry != null) {
+                                    return entry;
+                                }
+                            });
+                            if (location.length > 0) {
+                                payload.context['Location'] = location[0];
+                                console.log('Location = ', payload.context['Location']);
+                            } else {
+                                payload.context['Location'] = '';
+                            }
+
+                            /*
+                            // identify Company
+
+                            let company = entities.map(function(entry) {
+                              if (entry.type == 'Company') {
+                                return entry.text;
+                              }
+                            });
+                            company = company.filter(function(entry) {
+                              if (entry != null) {
+                                return entry;
+                              }
+                            });
+                            if (company.length > 0) {
+                              payload.context.userCompany = company[0];
+                            } else {
+                              delete payload.context.userCompany;
+                            }
+
+                            // identify Person
+
+                            let person = entities.map(function(entry) {
+                              if (entry.type == 'Person') {
+                                return entry.text;
+                              }
+                            });
+                            person = person.filter(function(entry) {
+                              if (entry != null) {
+                                return entry;
+                              }
+                            });
+                            if (person.length > 0) {
+                              payload.context.Person = person[0];
+                            } else {
+                              delete payload.context.Person;
+                            }
+
+                            // identify Vehicle
+
+                            let vehicle = entities.map(function(entry) {
+                              if (entry.type == 'Vehicle') {
+                                return entry.text;
+                              }
+                            });
+                            vehicle = vehicle.filter(function(entry) {
+                              if (entry != null) {
+                                return entry;
+                              }
+                            });
+                            if (vehicle.length > 0) {
+                              payload.context.userVehicle = vehicle[0];
+                            } else {
+                              delete payload.context.userVehicle;
+                            }
+                            // identify Email
+
+                            let email = entities.map(function(entry) {
+                              if(entry.type == 'EmailAddress') {
+                                return(entry.text);
+                              }
+                            });
+                            email = email.filter(function(entry) {
+                              if(entry != null) {
+                                return(entry);
+                              }
+                            });
+                            if(email.length > 0) {
+                              payload.context.userEmail = email[0];
+                            } else {
+                              delete payload.context.userEmail;
+                            }
+                            */
+                        }
+
+                        conversation.message(payload, function(err, data) {
+                            if (err) {
+                                return res.status(err.code || 500).json(err);
+                            } else {
+                                console.log('conversation.message :: ', JSON.stringify(data));
+                                // lookup actions
+                                checkForLookupRequests(data, function(err, data) {
+                                    if (err) {
+                                        return res.status(err.code || 500).json(err);
+                                    } else {
+                                        return res.json(data);
+                                    }
+                                });
+                            }
+                        });
+                    });
+                } else {
+                    conversation.message(payload, function(err, data) {
+                        if (err) {
+                            return res.status(err.code || 500).json(err);
+                        } else {
+                            console.log('conversation.message :: ', JSON.stringify(data));
+                            return res.json(data);
+                        }
+                    });
+                }
+            }
+        );
+    }
 });
 
 /**
-*
-* Looks for actions requested by conversation service and provides the requested data.
-*
-**/
+ *
+ * Looks for actions requested by conversation service and provides the requested data.
+ *
+ **/
 function checkForLookupRequests(data, callback) {
-  console.log('checkForLookupRequests');
+    console.log('checkForLookupRequests');
 
-  if (data.context && data.context.action && data.context.action.lookup && data.context.action.lookup != 'complete') {
-    const payload = {
-      workspace_id: workspaceID,
-      context: data.context,
-      input: data.input
-    };
-
-    // conversation requests a data lookup action
-    if (data.context.action.lookup === LOOKUP_BALANCE) {
-      console.log('Lookup Balance requested');
-      // if account type is specified (checking, savings or credit card)
-      if (data.context.action.account_type && data.context.action.account_type != '') {
-        // lookup account information services and update context with account data
-        bankingServices.getAccountInfo(7829706, data.context.action.account_type, function(err, accounts) {
-          if (err) {
-            console.log('Error while calling bankingServices.getAccountInfo ', err);
-            callback(err, null);
-            return;
-          }
-          const len = accounts ? accounts.length : 0;
-
-          const appendAccountResponse = data.context.action.append_response && data.context.action.append_response === true ? true : false;
-
-          let accountsResultText = '';
-
-          for (let i = 0; i < len; i++) {
-            accounts[i].balance = accounts[i].balance ? numeral(accounts[i].balance).format('INR 0,0.00') : '';
-
-            if (accounts[i].available_credit)
-              accounts[i].available_credit = accounts[i].available_credit ? numeral(accounts[i].available_credit).format('INR 0,0.00') : '';
-
-            if (accounts[i].last_statement_balance)
-              accounts[i].last_statement_balance = accounts[i].last_statement_balance ? numeral(accounts[i].last_statement_balance).format('INR 0,0.00') : '';
-
-            if (appendAccountResponse === true) {
-              accountsResultText += accounts[i].number + ' ' + accounts[i].type + ' Balance: ' + accounts[i].balance + '<br/>';
-            }
-          }
-
-          payload.context['accounts'] = accounts;
-
-          // clear the context's action since the lookup was completed.
-          payload.context.action = {};
-
-          if (!appendAccountResponse) {
-            console.log('call conversation.message with lookup results.');
-            conversation.message(payload, function(err, data) {
-              if (err) {
-                console.log('Error while calling conversation.message with lookup result', err);
-                callback(err, null);
-              } else {
-                console.log('checkForLookupRequests conversation.message :: ', JSON.stringify(data));
-                callback(null, data);
-              }
-            });
-          } else {
-            console.log('append lookup results to the output.');
-            // append accounts list text to response array
-            if (data.output.text) {
-              data.output.text.push(accountsResultText);
-            }
-            // clear the context's action since the lookup and append was completed.
-            data.context.action = {};
-
-            callback(null, data);
-          }
-        });
-      }
-    } else if (data.context.action.lookup === LOOKUP_TRANSACTIONS) {
-      console.log('Lookup Transactions requested');
-      bankingServices.getTransactions(7829706, data.context.action.category, function(err, transactionResponse) {
-        if (err) {
-          console.log('Error while calling account services for transactions', err);
-          callback(err, null);
-        } else {
-          let responseTxtAppend = '';
-          if (data.context.action.append_total && data.context.action.append_total === true) {
-            responseTxtAppend += 'Total = <b>' + numeral(transactionResponse.total).format('INR 0,0.00') + '</b>';
-          }
-
-          if (transactionResponse.transactions && transactionResponse.transactions.length > 0) {
-            // append transactions
-            const len = transactionResponse.transactions.length;
-            const sDt = new Date(data.context.action.startdt);
-            const eDt = new Date(data.context.action.enddt);
-            if (sDt && eDt) {
-              for (let i = 0; i < len; i++) {
-                const transaction = transactionResponse.transactions[i];
-                const tDt = new Date(transaction.date);
-                if (tDt > sDt && tDt < eDt) {
-                  if (data.context.action.append_response && data.context.action.append_response === true) {
-                    responseTxtAppend +=
-                      '<br/>' + transaction.date + ' &nbsp;' + numeral(transaction.amount).format('INR 0,0.00') + ' &nbsp;' + transaction.description;
-                  }
-                }
-              }
-            } else {
-              for (let i = 0; i < len; i++) {
-                const transaction1 = transactionResponse.transactions[i];
-                if (data.context.action.append_response && data.context.action.append_response === true) {
-                  responseTxtAppend +=
-                    '<br/>' + transaction1.date + ' &nbsp;' + numeral(transaction1.amount).format('INR 0,0.00') + ' &nbsp;' + transaction1.description;
-                }
-              }
-            }
-
-            if (responseTxtAppend != '') {
-              console.log('append lookup transaction results to the output.');
-              if (data.output.text) {
-                data.output.text.push(responseTxtAppend);
-              }
-              // clear the context's action since the lookup and append was completed.
-              data.context.action = {};
-            }
-            callback(null, data);
-
-            // clear the context's action since the lookup was completed.
-            payload.context.action = {};
-            return;
-          }
-        }
-      });
-    } else if (data.context.action.lookup === LOOKUP_5TRANSACTIONS) {
-      console.log('Lookup Transactions requested');
-      bankingServices.getTransactions(7829706, data.context.action.category, function(err, transactionResponse) {
-        if (err) {
-          console.log('Error while calling account services for transactions', err);
-          callback(err, null);
-        } else {
-          let responseTxtAppend = '';
-          if (data.context.action.append_total && data.context.action.append_total === true) {
-            responseTxtAppend += 'Total = <b>' + numeral(transactionResponse.total).format('INR 0,0.00') + '</b>';
-          }
-
-          transactionResponse.transactions.sort(function(a1, b1) {
-            const a = new Date(a1.date);
-            const b = new Date(b1.date);
-            return a > b ? -1 : a < b ? 1 : 0;
-          });
-
-          if (transactionResponse.transactions && transactionResponse.transactions.length > 0) {
-            // append transactions
-            const len = 5; // transaction_response.transactions.length;
-            for (let i = 0; i < len; i++) {
-              const transaction = transactionResponse.transactions[i];
-              if (data.context.action.append_response && data.context.action.append_response === true) {
-                responseTxtAppend +=
-                  '<br/>' + transaction.date + ' &nbsp;' + numeral(transaction.amount).format('INR 0,0.00') + ' &nbsp;' + transaction.description;
-              }
-            }
-          }
-          if (responseTxtAppend != '') {
-            console.log('append lookup transaction results to the output.');
-            if (data.output.text) {
-              data.output.text.push(responseTxtAppend);
-            }
-            // clear the context's action since the lookup and append was completed.
-            data.context.action = {};
-          }
-          callback(null, data);
-
-          // clear the context's action since the lookup was completed.
-          payload.context.action = {};
-          return;
-        }
-      });
-    } else if (data.context.action.lookup === 'branch') {
-      console.log('************** Branch details *************** InputText : ' + payload.input.text);
-      const loc = data.context.action.Location.toLowerCase();
-      bankingServices.getBranchInfo(loc, function(err, branchMaster) {
-        if (err) {
-          console.log('Error while calling bankingServices.getAccountInfo ', err);
-          callback(err, null);
-          return;
-        }
-
-        const appendBranchResponse = data.context.action.append_response && data.context.action.append_response === true ? true : false;
-
-        let branchText = '';
-
-        if (appendBranchResponse === true) {
-          if (branchMaster != null) {
-            branchText =
-              'Here are the branch details at ' +
-              branchMaster.location +
-              ' <br/>Address: ' +
-              branchMaster.address +
-              '<br/>Phone: ' +
-              branchMaster.phone +
-              '<br/>Operation Hours: ' +
-              branchMaster.hours +
-              '<br/>';
-          } else {
-            branchText = "Sorry currently we don't have branch details for " + data.context.action.Location;
-          }
-        }
-
-        payload.context['branch'] = branchMaster;
-
-        // clear the context's action since the lookup was completed.
-        payload.context.action = {};
-
-        if (!appendBranchResponse) {
-          console.log('call conversation.message with lookup results.');
-          conversation.message(payload, function(err, data) {
-            if (err) {
-              console.log('Error while calling conversation.message with lookup result', err);
-              callback(err, null);
-            } else {
-              console.log('checkForLookupRequests conversation.message :: ', JSON.stringify(data));
-              callback(null, data);
-            }
-          });
-        } else {
-          console.log('append lookup results to the output.');
-          // append accounts list text to response array
-          if (data.output.text) {
-            data.output.text.push(branchText);
-          }
-          // clear the context's action since the lookup and append was completed.
-          data.context.action = {};
-
-          callback(null, data);
-        }
-      });
-    } else if (data.context.action.lookup === DISCOVERY_ACTION) {
-      console.log('************** Discovery *************** InputText : ' + payload.input.text);
-      let discoveryResponse = '';
-      if (!discoveryParams) {
-        console.log('Discovery is not ready for query.');
-        discoveryResponse = 'Sorry, currently I do not have a response. Discovery initialization is in progress. Please try again later.';
-        if (data.output.text) {
-          data.output.text.push(discoveryResponse);
-        }
-        // Clear the context's action since the lookup and append was attempted.
-        data.context.action = {};
-        callback(null, data);
-        // Clear the context's action since the lookup was attempted.
-        payload.context.action = {};
-      } else {
-        const queryParams = {
-          natural_language_query: payload.input.text,
-          passages: true
+    if (data.context && data.context.action && data.context.action.lookup && data.context.action.lookup != 'complete') {
+        const payload = {
+            workspace_id: workspaceID,
+            context: data.context,
+            input: data.input
         };
-        Object.assign(queryParams, discoveryParams);
-        discovery.query(queryParams, (err, searchResponse) => {
-          discoveryResponse = 'Sorry, currently I do not have a response. Our Customer representative will get in touch with you shortly.';
-          if (err) {
-            console.error('Error searching for documents: ' + err);
-          } else if (searchResponse.passages.length > 0) {
-            const bestPassage = searchResponse.passages[0];
-            console.log('Passage score: ', bestPassage.passage_score);
-            console.log('Passage text: ', bestPassage.passage_text);
 
-            // Trim the passage to try to get just the answer part of it.
-            const lines = bestPassage.passage_text.split('\n');
-            let bestLine;
-            let questionFound = false;
-            for (let i = 0, size = lines.length; i < size; i++) {
-              const line = lines[i].trim();
-              if (!line) {
-                continue; // skip empty/blank lines
-              }
-              if (line.includes('?') || line.includes('<h1')) {
-                // To get the answer we needed to know the Q/A format of the doc.
-                // Skip questions which either have a '?' or are a header '<h1'...
-                questionFound = true;
-                continue;
-              }
-              bestLine = line; // Best so far, but can be tail of earlier answer.
-              if (questionFound && bestLine) {
-                // We found the first non-blank answer after the end of a question. Use it.
-                break;
-              }
+        // conversation requests a data lookup action
+        if (data.context.action.lookup === LOOKUP_BALANCE) {
+            console.log('Lookup Balance requested');
+            // if account type is specified (checking, savings or credit card)
+            if (data.context.action.account_type && data.context.action.account_type != '') {
+                // lookup account information services and update context with account data
+                bankingServices.getAccountInfo(7829706, data.context.action.account_type, function(err, accounts) {
+                    if (err) {
+                        console.log('Error while calling bankingServices.getAccountInfo ', err);
+                        callback(err, null);
+                        return;
+                    }
+                    const len = accounts ? accounts.length : 0;
+
+                    const appendAccountResponse = data.context.action.append_response && data.context.action.append_response === true ? true : false;
+
+                    let accountsResultText = '';
+
+                    for (let i = 0; i < len; i++) {
+                        accounts[i].balance = accounts[i].balance ? numeral(accounts[i].balance).format('INR 0,0.00') : '';
+
+                        if (accounts[i].available_credit)
+                            accounts[i].available_credit = accounts[i].available_credit ? numeral(accounts[i].available_credit).format('INR 0,0.00') : '';
+
+                        if (accounts[i].last_statement_balance)
+                            accounts[i].last_statement_balance = accounts[i].last_statement_balance ? numeral(accounts[i].last_statement_balance).format('INR 0,0.00') : '';
+
+                        if (appendAccountResponse === true) {
+                            accountsResultText += accounts[i].number + ' ' + accounts[i].type + ' Balance: ' + accounts[i].balance + '<br/>';
+                        }
+                    }
+
+                    payload.context['accounts'] = accounts;
+
+                    // clear the context's action since the lookup was completed.
+                    payload.context.action = {};
+
+                    if (!appendAccountResponse) {
+                        console.log('call conversation.message with lookup results.');
+                        conversation.message(payload, function(err, data) {
+                            if (err) {
+                                console.log('Error while calling conversation.message with lookup result', err);
+                                callback(err, null);
+                            } else {
+                                console.log('checkForLookupRequests conversation.message :: ', JSON.stringify(data));
+                                callback(null, data);
+                            }
+                        });
+                    } else {
+                        console.log('append lookup results to the output.');
+                        // append accounts list text to response array
+                        if (data.output.text) {
+                            data.output.text.push(accountsResultText);
+                        }
+                        // clear the context's action since the lookup and append was completed.
+                        data.context.action = {};
+
+                        callback(null, data);
+                    }
+                });
             }
-            discoveryResponse =
-              bestLine || 'Sorry I currently do not have an appropriate response for your query. Our customer care executive will call you in 24 hours.';
-          }
+        } else if (data.context.action.lookup === LOOKUP_TRANSACTIONS) {
+            console.log('Lookup Transactions requested');
+            bankingServices.getTransactions(7829706, data.context.action.category, function(err, transactionResponse) {
+                if (err) {
+                    console.log('Error while calling account services for transactions', err);
+                    callback(err, null);
+                } else {
+                    let responseTxtAppend = '';
+                    if (data.context.action.append_total && data.context.action.append_total === true) {
+                        responseTxtAppend += 'Total = <b>' + numeral(transactionResponse.total).format('INR 0,0.00') + '</b>';
+                    }
 
-          if (data.output.text) {
-            data.output.text.push(discoveryResponse);
-          }
-          // Clear the context's action since the lookup and append was completed.
-          data.context.action = {};
-          callback(null, data);
-          // Clear the context's action since the lookup was completed.
-          payload.context.action = {};
-        });
-      }
+                    if (transactionResponse.transactions && transactionResponse.transactions.length > 0) {
+                        // append transactions
+                        const len = transactionResponse.transactions.length;
+                        const sDt = new Date(data.context.action.startdt);
+                        const eDt = new Date(data.context.action.enddt);
+                        if (sDt && eDt) {
+                            for (let i = 0; i < len; i++) {
+                                const transaction = transactionResponse.transactions[i];
+                                const tDt = new Date(transaction.date);
+                                if (tDt > sDt && tDt < eDt) {
+                                    if (data.context.action.append_response && data.context.action.append_response === true) {
+                                        responseTxtAppend +=
+                                            '<br/>' + transaction.date + ' &nbsp;' + numeral(transaction.amount).format('INR 0,0.00') + ' &nbsp;' + transaction.description;
+                                    }
+                                }
+                            }
+                        } else {
+                            for (let i = 0; i < len; i++) {
+                                const transaction1 = transactionResponse.transactions[i];
+                                if (data.context.action.append_response && data.context.action.append_response === true) {
+                                    responseTxtAppend +=
+                                        '<br/>' + transaction1.date + ' &nbsp;' + numeral(transaction1.amount).format('INR 0,0.00') + ' &nbsp;' + transaction1.description;
+                                }
+                            }
+                        }
+
+                        if (responseTxtAppend != '') {
+                            console.log('append lookup transaction results to the output.');
+                            if (data.output.text) {
+                                data.output.text.push(responseTxtAppend);
+                            }
+                            // clear the context's action since the lookup and append was completed.
+                            data.context.action = {};
+                        }
+                        callback(null, data);
+
+                        // clear the context's action since the lookup was completed.
+                        payload.context.action = {};
+                        return;
+                    }
+                }
+            });
+        } else if (data.context.action.lookup === LOOKUP_5TRANSACTIONS) {
+            console.log('Lookup Transactions requested');
+            bankingServices.getTransactions(7829706, data.context.action.category, function(err, transactionResponse) {
+                if (err) {
+                    console.log('Error while calling account services for transactions', err);
+                    callback(err, null);
+                } else {
+                    let responseTxtAppend = '';
+                    if (data.context.action.append_total && data.context.action.append_total === true) {
+                        responseTxtAppend += 'Total = <b>' + numeral(transactionResponse.total).format('INR 0,0.00') + '</b>';
+                    }
+
+                    transactionResponse.transactions.sort(function(a1, b1) {
+                        const a = new Date(a1.date);
+                        const b = new Date(b1.date);
+                        return a > b ? -1 : a < b ? 1 : 0;
+                    });
+
+                    if (transactionResponse.transactions && transactionResponse.transactions.length > 0) {
+                        // append transactions
+                        const len = 5; // transaction_response.transactions.length;
+                        for (let i = 0; i < len; i++) {
+                            const transaction = transactionResponse.transactions[i];
+                            if (data.context.action.append_response && data.context.action.append_response === true) {
+                                responseTxtAppend +=
+                                    '<br/>' + transaction.date + ' &nbsp;' + numeral(transaction.amount).format('INR 0,0.00') + ' &nbsp;' + transaction.description;
+                            }
+                        }
+                    }
+                    if (responseTxtAppend != '') {
+                        console.log('append lookup transaction results to the output.');
+                        if (data.output.text) {
+                            data.output.text.push(responseTxtAppend);
+                        }
+                        // clear the context's action since the lookup and append was completed.
+                        data.context.action = {};
+                    }
+                    callback(null, data);
+
+                    // clear the context's action since the lookup was completed.
+                    payload.context.action = {};
+                    return;
+                }
+            });
+        } else if (data.context.action.lookup === 'branch') {
+            console.log('************** Branch details *************** InputText : ' + payload.input.text);
+            const loc = data.context.action.Location.toLowerCase();
+            bankingServices.getBranchInfo(loc, function(err, branchMaster) {
+                if (err) {
+                    console.log('Error while calling bankingServices.getAccountInfo ', err);
+                    callback(err, null);
+                    return;
+                }
+
+                const appendBranchResponse = data.context.action.append_response && data.context.action.append_response === true ? true : false;
+
+                let branchText = '';
+
+                if (appendBranchResponse === true) {
+                    if (branchMaster != null) {
+                        branchText =
+                            'Here are the branch details at ' +
+                            branchMaster.location +
+                            ' <br/>Address: ' +
+                            branchMaster.address +
+                            '<br/>Phone: ' +
+                            branchMaster.phone +
+                            '<br/>Operation Hours: ' +
+                            branchMaster.hours +
+                            '<br/>';
+                    } else {
+                        branchText = "Sorry currently we don't have branch details for " + data.context.action.Location;
+                    }
+                }
+
+                payload.context['branch'] = branchMaster;
+
+                // clear the context's action since the lookup was completed.
+                payload.context.action = {};
+
+                if (!appendBranchResponse) {
+                    console.log('call conversation.message with lookup results.');
+                    conversation.message(payload, function(err, data) {
+                        if (err) {
+                            console.log('Error while calling conversation.message with lookup result', err);
+                            callback(err, null);
+                        } else {
+                            console.log('checkForLookupRequests conversation.message :: ', JSON.stringify(data));
+                            callback(null, data);
+                        }
+                    });
+                } else {
+                    console.log('append lookup results to the output.');
+                    // append accounts list text to response array
+                    if (data.output.text) {
+                        data.output.text.push(branchText);
+                    }
+                    // clear the context's action since the lookup and append was completed.
+                    data.context.action = {};
+
+                    callback(null, data);
+                }
+            });
+        } else if (data.context.action.lookup === DISCOVERY_ACTION) {
+            console.log('************** Discovery *************** InputText : ' + payload.input.text);
+            let discoveryResponse = '';
+            if (!discoveryParams) {
+                console.log('Discovery is not ready for query.');
+                discoveryResponse = 'Sorry, currently I do not have a response. Discovery initialization is in progress. Please try again later.';
+                if (data.output.text) {
+                    data.output.text.push(discoveryResponse);
+                }
+                // Clear the context's action since the lookup and append was attempted.
+                data.context.action = {};
+                callback(null, data);
+                // Clear the context's action since the lookup was attempted.
+                payload.context.action = {};
+            } else {
+                const queryParams = {
+                    natural_language_query: payload.input.text,
+                    passages: true
+                };
+                Object.assign(queryParams, discoveryParams);
+                discovery.query(queryParams, (err, searchResponse) => {
+                    discoveryResponse = 'Sorry, currently I do not have a response. Our Customer representative will get in touch with you shortly.';
+                    if (err) {
+                        console.error('Error searching for documents: ' + err);
+                    } else if (searchResponse.passages.length > 0) {
+                        const bestPassage = searchResponse.passages[0];
+                        console.log('Passage score: ', bestPassage.passage_score);
+                        console.log('Passage text: ', bestPassage.passage_text);
+
+                        // Trim the passage to try to get just the answer part of it.
+                        const lines = bestPassage.passage_text.split('\n');
+                        let bestLine;
+                        let questionFound = false;
+                        for (let i = 0, size = lines.length; i < size; i++) {
+                            const line = lines[i].trim();
+                            if (!line) {
+                                continue; // skip empty/blank lines
+                            }
+                            if (line.includes('?') || line.includes('<h1')) {
+                                // To get the answer we needed to know the Q/A format of the doc.
+                                // Skip questions which either have a '?' or are a header '<h1'...
+                                questionFound = true;
+                                continue;
+                            }
+                            bestLine = line; // Best so far, but can be tail of earlier answer.
+                            if (questionFound && bestLine) {
+                                // We found the first non-blank answer after the end of a question. Use it.
+                                break;
+                            }
+                        }
+                        discoveryResponse =
+                            bestLine || 'Sorry I currently do not have an appropriate response for your query. Our customer care executive will call you in 24 hours.';
+                    }
+
+                    if (data.output.text) {
+                        data.output.text.push(discoveryResponse);
+                    }
+                    // Clear the context's action since the lookup and append was completed.
+                    data.context.action = {};
+                    callback(null, data);
+                    // Clear the context's action since the lookup was completed.
+                    payload.context.action = {};
+                });
+            }
+        }
+        else if (data.context.action.lookup === CREATE_TICKET) { 
+            console.log("Creating Ticket for customer")
+            var ticket_id = createTicket(data);
+            console.log("Remdey ticket ID : "+ticket_id);
+
+        } else {
+            callback(null, data);
+            return;
+        }
     } else {
-      callback(null, data);
-      return;
+        callback(null, data);
+        return;
     }
-  } else {
-    callback(null, data);
-    return;
-  }
 }
 
 /**
@@ -700,65 +709,81 @@ function checkForLookupRequests(data, callback) {
  * @param {String} reason - The error message for the setup error.
  */
 function handleSetupError(reason) {
-  setupError += ' ' + reason;
-  console.error('The app failed to initialize properly. Setup and restart needed.' + setupError);
-  // We could allow our chatbot to run. It would just report the above error.
-  // Or we can add the following 2 lines to abort on a setup error allowing Bluemix to restart it.
-  console.error('\nAborting due to setup error!');
-  process.exit(1);
+    setupError += ' ' + reason;
+    console.error('The app failed to initialize properly. Setup and restart needed.' + setupError);
+    // We could allow our chatbot to run. It would just report the above error.
+    // Or we can add the following 2 lines to abort on a setup error allowing Bluemix to restart it.
+    console.error('\nAborting due to setup error!');
+    process.exit(1);
 }
 
-function createTicket(data){
-console.log("Creating a ticket");
-	var x_user_mail = data.context.useremail;
-	var x_manager_mail = data.context.manageremail;
-	var x_user_asset_id = data.context.assetid;
-	var req_body = prepare_req_body(x_user_mail,x_manager_mail,x_user_asset_id);
-	
-	send_remedy_post(req_body);
-	
-	
-	}
-function prepare_req_body(x_user_mail,x_manager_mail,x_user_asset_id){
 
-  return "<?xml version='1.0' encoding='utf-8'?>" +
-           "<soapenv:Envelope xmlns:soapenv='http://schemas.xmlsoap.org/soap/envelope/' xmlns:urn='urn:HPD_IncidentInterface_Create_WS'>"+
-           "<soapenv:Header><urn:AuthenticationInfo><urn:userName>FU-ICE-VA</urn:userName><urn:password>;R*bqn?dG}v~Y5.5</urn:password></urn:AuthenticationInfo></soapenv:Header><soapenv:Body><urn:HelpDesk_Submit_Service><urn:Assigned_Group>Virtual Agent</urn:Assigned_Group><urn:Assigned_Support_Company>Vodafone IT Services</urn:Assigned_Support_Company><urn:Assigned_Support_Organization>ITSM System</urn:Assigned_Support_Organization><urn:Assignee>AMELIA Virtual Agent</urn:Assignee><urn:Categorization_Tier_1>FRONT OFFICE SERVICES</urn:Categorization_Tier_1><urn:Categorization_Tier_2>Push Mail</urn:Categorization_Tier_2><urn:Categorization_Tier_3>Enable device (Activation Push mail)</urn:Categorization_Tier_3><urn:First_Name>Mohamed</urn:First_Name><urn:Impact>3-Moderate/Limited</urn:Impact><urn:Last_Name>Mahmoud Nofal</urn:Last_Name><urn:Product_Name>VF-MOBILE DEVICE MANAGEMENT-CLIENT</urn:Product_Name><urn:Reported_Source>Web to ticket</urn:Reported_Source><urn:Service_Type>User Service Request</urn:Service_Type><urn:Status>In Progress</urn:Status><urn:Action>CREATE</urn:Action><urn:Create_Request>0</urn:Create_Request><urn:Summary>Airwatch Agent enrollment</urn:Summary><urn:Notes>User has issue with reset password ..... User email :"+x_user_mail+" ... asset id : "+x_user_asset_id+" .... Line manager : "+x_manager_mail+"</urn:Notes><urn:Urgency>3-Medium</urn:Urgency><urn:ServiceCI>VF-MOBILE DEVICE MANAGEMENT-CLIENT</urn:ServiceCI><urn:Login_ID>mnofal</urn:Login_ID></urn:HelpDesk_Submit_Service></soapenv:Body></soapenv:Envelope>";
-	
+// async function to create vodafone remedy 8 stage ticket
+async function createTicket() {
+ 
+  // loggee to test asyncronse code
+  console.log("Hello Remedy");
+  var post_response = await send_remedy_post();
+  // loggee to test asyncronse code
+  console.log("Thank you Remedy");
+  return getRemedyTicket(post_response); 
+  
 }
-function send_remedy_post(req_body){
-	var http = require('https');
-	var fs = require('fs');
 
+// function to parse remedy response to extract the ticket number
+function getRemedyTicket(post_response){
+  var parser = require('libxml-to-js');
+  parser(post_response, '//ns0:Incident_Number', function(error, result) {
+        if (error) {
+            console.error(error);
+        } else {
+            var my_ticket = result[0]['#'];
+            console.log("Ticket number " + my_ticket);
+            return my_ticket;
+        }
+    });
 
-var postRequest = {
-    host: "itsm-stage.vodafone.com",
-    port: 443,
-	path: "/arsys-ext/services/ARService?server=itsm-stage&webService=HPD_IncidentInterface_Create_WS",
-    method: "POST",
-    headers: {
-        'Content-Type': 'text/xml;charset=UTF-8',
-        'Content-Length': Buffer.byteLength(req_body),
-		'SOAPAction':'urn:HPD_IncidentInterface_Create_WS/HelpDesk_Submit_Service'
-    }
-};
-
-var buffer = "";
-
-var req = http.request( postRequest, function( res )    {
-
-   console.log( res.statusCode );
-   var buffer = "";
-   res.on( "data", function( data ) { buffer = buffer + data; } );
-   res.on( "end", function( data ) { console.log( buffer ); } );
-
-});
-
-req.on('error', function(e) {
-    console.log('problem with request: ' + e.message);
-});
-
-req.write( req_body );
-req.end();
 }
+
+// fnuction send a post request to Remedy to create a ticket for the user
+function send_remedy_post() {
+
+	return new Promise((resolve , reject) => {
+    const http = require('https');
+    const fs = require('fs');
+		var soap_body = "<?xml version='1.0' encoding='utf-8'?>" +
+			"<soapenv:Envelope xmlns:soapenv='http://schemas.xmlsoap.org/soap/envelope/' xmlns:urn='urn:HPD_IncidentInterface_Create_WS'>" +
+			"<soapenv:Header><urn:AuthenticationInfo><urn:userName>FU-ICE-VA</urn:userName><urn:password>;R*bqn?dG}v~Y5.5</urn:password></urn:AuthenticationInfo></soapenv:Header><soapenv:Body><urn:HelpDesk_Submit_Service><urn:Assigned_Group>Virtual Agent</urn:Assigned_Group><urn:Assigned_Support_Company>Vodafone IT Services</urn:Assigned_Support_Company><urn:Assigned_Support_Organization>ITSM System</urn:Assigned_Support_Organization><urn:Assignee>AMELIA Virtual Agent</urn:Assignee><urn:Categorization_Tier_1>FRONT OFFICE SERVICES</urn:Categorization_Tier_1><urn:Categorization_Tier_2>Push Mail</urn:Categorization_Tier_2><urn:Categorization_Tier_3>Enable device (Activation Push mail)</urn:Categorization_Tier_3><urn:First_Name>Mohamed</urn:First_Name><urn:Impact>3-Moderate/Limited</urn:Impact><urn:Last_Name>Mahmoud Nofal</urn:Last_Name><urn:Product_Name>VF-MOBILE DEVICE MANAGEMENT-CLIENT</urn:Product_Name><urn:Reported_Source>Web to ticket</urn:Reported_Source><urn:Service_Type>User Service Request</urn:Service_Type><urn:Status>In Progress</urn:Status><urn:Action>CREATE</urn:Action><urn:Create_Request>0</urn:Create_Request><urn:Summary>Airwatch Agent enrollment</urn:Summary><urn:Notes>User has issue with reset password ..... User email : ... asset id :  .... Line manager : </urn:Notes><urn:Urgency>3-Medium</urn:Urgency><urn:ServiceCI>VF-MOBILE DEVICE MANAGEMENT-CLIENT</urn:ServiceCI><urn:Login_ID>mnofal</urn:Login_ID></urn:HelpDesk_Submit_Service></soapenv:Body></soapenv:Envelope>";
+
+		var postRequest = {
+			host: "itsm-stage.vodafone.com",
+			port: 443,
+			path: "/arsys-ext/services/ARService?server=itsm-stage&webService=HPD_IncidentInterface_Create_WS",
+			method: "POST",
+			headers: {
+				'Content-Type': 'text/xml;charset=UTF-8',
+				'Content-Length': Buffer.byteLength(soap_body),
+				'SOAPAction': 'urn:HPD_IncidentInterface_Create_WS/HelpDesk_Submit_Service'
+			}
+		};
+
+		var buffer = "";
+		var req = http.request(postRequest, function (res,err) {
+				console.log(res.statusCode);
+				var buffer = "";
+				res.on("data", function (data) {
+					buffer = buffer + data;
+				});
+				res.on("end", function (data) {
+					console.log(buffer);
+					resolve(buffer);
+				});
+			});
+
+		req.write(soap_body);
+		req.end();
+
+	});
+
+}   
 module.exports = app;
